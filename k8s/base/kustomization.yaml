@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - rbac.yaml
+  - postgres.yaml
+  - rabbitmq.yaml
+  - minio.yaml
+  - backend.yaml
+  - worker.yaml
+  - frontend.yaml
+  - ingress.yaml
+  - networkpolicy.yaml
+  - backup-cronjob.yaml
+labels:
+  - pairs: {app.kubernetes.io/part-of: helpdesk}
+    includeSelectors: false
+configMapGenerator:           # configuration NON secrète. Les secrets sont créés par scripts/create-secrets.sh
+  - name: helpdesk-config
+    literals:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=helpdesk
+      - POSTGRES_DB=helpdesk
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_USER=helpdesk
+      - S3_ENDPOINT=http://minio:9000
+      - S3_BUCKET=helpdesk
+      - QUEUE_NAME=tickets.events

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Helpdesk</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header><h1>Helpdesk</h1><span id="who"></span><button id="logout" hidden>Déconnexion</button></header>
+  <main>
+    <section id="auth">
+      <h2>Connexion</h2>
+      <form id="auth-form">
+        <input id="email" type="email" placeholder="email" required>
+        <input id="password" type="password" placeholder="mot de passe (8 car. min)" minlength="8" required>
+        <button type="submit" data-mode="login">Se connecter</button>
+        <button type="button" id="register">Créer un compte</button>
+      </form>
+    </section>
+
+    <section id="app" hidden>
+      <h2>Nouveau ticket</h2>
+      <form id="ticket-form">
+        <input id="title" placeholder="Titre" required minlength="3">
+        <textarea id="desc" placeholder="Description"></textarea>
+        <input id="file" type="file">
+        <button type="submit">Créer</button>
+      </form>
+
+      <h2>Tickets <button id="refresh">Rafraîchir</button> <button id="export" hidden>Exporter en CSV</button></h2>
+      <table id="tickets"><thead><tr><th>#</th><th>Titre</th><th>Statut</th><th>Notifié</th><th>PJ</th><th></th></tr></thead><tbody></tbody></table>
+
+      <section id="detail" hidden>
+        <h3 id="d-title"></h3><p id="d-desc"></p>
+        <ul id="comments"></ul>
+        <form id="comment-form"><input id="comment" placeholder="Commentaire" required><button>Ajouter</button></form>
+      </section>
+    </section>
+    <p id="msg"></p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

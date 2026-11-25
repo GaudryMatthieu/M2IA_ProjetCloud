@@ -1,0 +1,83 @@
+# Appliqué par ./launch.sh monitoring-config (nécessite les CRD de kube-prometheus-stack)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: helpdesk-backend
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+    - helpdesk-dev
+    - helpdesk-prod
+    - helpdesk-ci
+  selector:
+    matchLabels:
+      app: backend
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: helpdesk-worker
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+    - helpdesk-dev
+    - helpdesk-prod
+    - helpdesk-ci
+  selector:
+    matchLabels:
+      app: worker
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: helpdesk
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: helpdesk
+spec:
+  groups:
+  - name: helpdesk-slo
+    rules:
+    - record: helpdesk:api_availability:ratio_rate5m
+      expr: 1 - (sum(rate(http_requests_total{status=~"5.."}[5m])) or vector(0)) / sum(rate(http_requests_total[5m]))
+    - record: helpdesk:api_latency_under_500ms:ratio_rate5m
+      expr: sum(rate(http_request_duration_seconds_bucket{le="0.5"}[5m])) / sum(rate(http_request_duration_seconds_count[5m]))
+  - name: helpdesk-alerts
+    rules:
+    - alert: HelpdeskBackendDown
+      expr: absent(up{job="backend"} == 1)
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: Aucune instance du back-end n'est joignable
+    - alert: HelpdeskHighErrorRate
+      expr: (1 - helpdesk:api_availability:ratio_rate5m) > 0.05
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: Plus de 5 % d'erreurs 5xx sur l'API (SLO disponibilité menacé)
+    - alert: HelpdeskHighLatencyP95
+      expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) > 0.5
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: Latence p95 de l'API supérieure à 500 ms
+    - alert: HelpdeskWorkerJobsFailing
+      expr: increase(worker_jobs_total{result="error"}[10m]) > 0
+      labels:
+        severity: warning
+      annotations:
+        summary: Des jobs du worker échouent (messages envoyés en DLQ)

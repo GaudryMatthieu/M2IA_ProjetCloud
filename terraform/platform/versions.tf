@@ -1,0 +1,20 @@
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    kubernetes = { source = "hashicorp/kubernetes", version = "~> 2.30" }
+    helm       = { source = "hashicorp/helm", version = "~> 2.15" }
+    random     = { source = "hashicorp/random", version = "~> 3.6" }
+  }
+}
+
+provider "kubernetes" {
+  config_path    = var.kubeconfig_path
+  config_context = "kind-${var.cluster_name}"
+}
+
+provider "helm" {
+  kubernetes {
+    config_path    = var.kubeconfig_path
+    config_context = "kind-${var.cluster_name}"
+  }
+}

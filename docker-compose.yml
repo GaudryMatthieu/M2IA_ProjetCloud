@@ -1,0 +1,132 @@
+# Stack complète en local : front + back + worker + PostgreSQL + RabbitMQ + MinIO (stockage objet S3)
+# Lancement :  ./launch.sh compose-up        (ajouter --profile monitoring pour Prometheus + Grafana)
+name: helpdesk
+
+x-app-env: &app-env
+  POSTGRES_HOST: postgres
+  POSTGRES_USER: ${POSTGRES_USER:-helpdesk}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?définir dans .env}
+  POSTGRES_DB: ${POSTGRES_DB:-helpdesk}
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_USER: ${RABBITMQ_USER:-helpdesk}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?définir dans .env}
+  S3_ENDPOINT: http://minio:9000
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:?définir dans .env}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:?définir dans .env}
+  S3_BUCKET: helpdesk
+  JWT_SECRET: ${JWT_SECRET:?définir dans .env}
+
+services:
+  frontend:
+    build: ./app/frontend
+    image: helpdesk-frontend:${TAG:-dev}
+    ports: ["8081:8080"]
+    depends_on: [backend]
+    networks: [edge, app]
+    restart: unless-stopped
+
+  backend:
+    build: ./app/backend
+    image: helpdesk-backend:${TAG:-dev}
+    environment: *app-env
+    ports: ["8000:8000"]          # exposé en local pour Swagger (/docs) et Prometheus
+    depends_on:
+      postgres: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [edge, app]
+    restart: unless-stopped
+
+  worker:
+    build: ./app/worker
+    image: helpdesk-worker:${TAG:-dev}
+    environment: *app-env
+    depends_on:
+      postgres: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      backend: {condition: service_healthy}   # le backend crée le schéma de base
+    networks: [app]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-helpdesk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-helpdesk}
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [app]
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-helpdesk}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports: ["15672:15672"]        # console de gestion
+    volumes: ["rabbitdata:/var/lib/rabbitmq"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [app]
+    restart: unless-stopped
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest      
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+      MINIO_KMS_SECRET_KEY: ${MINIO_KMS_SECRET_KEY}   # chiffrement au repos SSE-S3
+    ports: ["9001:9001"]          # console MinIO
+    volumes: ["miniodata:/data"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [app]
+    restart: unless-stopped
+
+  # ----- Supervision (profil optionnel) -----
+  prometheus:
+    profiles: [monitoring]
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/rules.yml:/etc/prometheus/rules.yml:ro
+    ports: ["9090:9090"]
+    networks: [app]
+
+  grafana:
+    profiles: [monitoring]
+    image: grafana/grafana:11.3.1
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    networks: [app]
+
+networks:
+  edge: {}
+  app: {}
+
+volumes:
+  pgdata:
+  rabbitdata:
+  miniodata:

@@ -1,0 +1,12 @@
+.env
+*.tfstate
+*.tfstate.*
+.terraform/
+terraform/cluster/helpdesk-config
+*.pem
+*.key
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+results/
+.tls/

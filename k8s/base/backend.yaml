@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: Service
+metadata: {name: backend, labels: {app: backend}}
+spec:
+  selector: {app: backend}
+  ports: [{name: http, port: 8000, targetPort: 8000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: backend, labels: {app: backend}}
+spec:
+  replicas: 2
+  strategy:                       # stratégie de déploiement : rolling update sans coupure
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector: {matchLabels: {app: backend}}
+  template:
+    metadata: {labels: {app: backend}}
+    spec:
+      serviceAccountName: backend
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: backend
+          image: helpdesk-backend
+          imagePullPolicy: IfNotPresent
+          ports: [{name: http, containerPort: 8000}]
+          envFrom: [{configMapRef: {name: helpdesk-config}}]
+          env:
+            - {name: POSTGRES_PASSWORD, valueFrom: {secretKeyRef: {name: helpdesk-secrets, key: POSTGRES_PASSWORD}}}
+            - {name: RABBITMQ_PASSWORD, valueFrom: {secretKeyRef: {name: helpdesk-secrets, key: RABBITMQ_PASSWORD}}}
+            - {name: S3_ACCESS_KEY, valueFrom: {secretKeyRef: {name: helpdesk-secrets, key: S3_ACCESS_KEY}}}
+            - {name: S3_SECRET_KEY, valueFrom: {secretKeyRef: {name: helpdesk-secrets, key: S3_SECRET_KEY}}}
+            - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: helpdesk-secrets, key: JWT_SECRET}}}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 3
+            failureThreshold: 40
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {}}]
+---
+# Autoscaling horizontal du back-end
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: backend}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: backend}
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 50}}
+  behavior:
+    scaleDown: {stabilizationWindowSeconds: 60}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: backend}
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app: backend}}

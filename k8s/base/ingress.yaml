@@ -1,0 +1,17 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: helpdesk
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"     # chiffrement en transit (TLS)
+    nginx.ingress.kubernetes.io/proxy-body-size: 10m
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [helpdesk.localtest.me]
+      secretName: helpdesk-tls
+  rules:
+    - host: helpdesk.localtest.me
+      http:
+        paths:
+          - {path: /, pathType: Prefix, backend: {service: {name: frontend, port: {number: 80}}}}

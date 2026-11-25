@@ -1,0 +1,7 @@
+# Version "naïve" (single-stage, image complète, root) — utilisée UNIQUEMENT pour mesurer le gain FinOps du multi-stage.
+FROM python:3.12
+WORKDIR /srv
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY app ./app
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

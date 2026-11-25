@@ -1,0 +1,46 @@
+# Sauvegarde quotidienne de PostgreSQL vers le stockage objet (A.8.13)
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: db-backup}
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata: {labels: {app: db-backup}}
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: data
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          initContainers:
+            - name: dump
+              image: postgres:16-alpine
+              command: ["sh", "-c"]
+              args: ["pg_dump -h postgres -U $POSTGRES_USER $POSTGRES_DB | gzip > /backup/db-$(date +%Y%m%d-%H%M%S).sql.gz && ls -l /backup"]
+              env:
+                - {name: POSTGRES_USER, valueFrom: {configMapKeyRef: {name: helpdesk-config, key: POSTGRES_USER}}}
+                - {name: POSTGRES_DB, valueFrom: {configMapKeyRef: {name: helpdesk-config, key: POSTGRES_DB}}}
+                - {name: PGPASSWORD, valueFrom: {secretKeyRef: {name: helpdesk-secrets, key: POSTGRES_PASSWORD}}}
+              resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {cpu: 300m, memory: 256Mi}}
+              volumeMounts: [{name: backup, mountPath: /backup}]
+          containers:
+            - name: upload
+              image: minio/mc:latest
+              command: ["mc", "cp", "--recursive", "/backup/", "s3/helpdesk/backups/"]
+              env:
+                - {name: S3_ACCESS_KEY, valueFrom: {secretKeyRef: {name: helpdesk-secrets, key: S3_ACCESS_KEY}}}
+                - {name: S3_SECRET_KEY, valueFrom: {secretKeyRef: {name: helpdesk-secrets, key: S3_SECRET_KEY}}}
+                - {name: MC_CONFIG_DIR, value: /tmp/.mc}
+                - {name: MC_HOST_s3, value: "http://$(S3_ACCESS_KEY):$(S3_SECRET_KEY)@minio:9000"}
+              resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {cpu: 300m, memory: 256Mi}}
+              volumeMounts:
+                - {name: backup, mountPath: /backup}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - {name: backup, emptyDir: {}}
+            - {name: tmp, emptyDir: {}}

@@ -1,0 +1,163 @@
+name: ci-cd
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/helpdesk
+
+jobs:
+  # ---------------------------------------------------------------- 1. LINT + TESTS
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - name: Back-end — lint + tests
+        working-directory: cloud/helpdesk-cloud/helpdesk-cloud
+        run: |
+          pip install -r requirements-dev.txt
+          ruff check .
+          python -m pytest -q
+      - name: Worker — lint + tests
+        working-directory: cloud/helpdesk-cloud/helpdesk-cloud
+        run: |
+          pip install -r requirements-dev.txt
+          ruff check .
+          python -m pytest -q
+      - name: Analyse de code sécurité (bandit)   # A.8.28 codage sécurisé
+        run: |
+          pip install bandit
+          bandit -r app/backend/app app/worker/worker.py -ll
+
+  # ---------------------------------------------------------------- 2. VALIDATION IaC + MANIFESTS
+  validate-infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Terraform validate
+        run: |
+          for d in cluster platform; do
+            terraform -chdir=terraform/$d init -backend=false -input=false
+            terraform -chdir=terraform/$d validate
+          done
+      - name: Validation des manifests Kubernetes (kubeconform)
+        run: |
+          for o in dev prod ci; do
+            kubectl kustomize k8s/overlays/$o | docker run -i --rm ghcr.io/yannh/kubeconform:latest -strict -summary -ignore-missing-schemas -
+          done
+
+  # ---------------------------------------------------------------- 3. BUILD + SCAN + PUSH (GHCR)
+  build-push:
+    needs: [lint-test, validate-infra]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions: {contents: read, packages: write}
+    defaults:
+      run:
+       working-directory: cloud/helpdesk-cloud/helpdesk-cloud
+    strategy:
+      matrix:
+        service: [backend, worker, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      - name: Nom d'image en minuscules
+        run: echo "IMAGE=$(echo "${IMAGE_PREFIX}-${{ matrix.service }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+      - name: Build (sans push)
+        uses: docker/build-push-action@v6
+        with:
+          context: cloud/helpdesk-cloud/helpdesk-cloud
+          load: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Scan Trivy (bloquant sur CRITICAL corrigeable)   # A.8.7 / A.8.25
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Push
+        run: |
+          docker push "$IMAGE:${{ github.sha }}"
+          docker tag  "$IMAGE:${{ github.sha }}" "$IMAGE:main"
+          docker push "$IMAGE:main"
+
+  # ---------------------------------------------------------------- 4. DÉPLOIEMENT D'ESSAI (cluster kind éphémère dans le runner)
+  deploy-ephemeral:
+    needs: build-push
+    runs-on: ubuntu-latest
+    permissions: {contents: read, packages: read}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+        with: {cluster_name: ci}
+      - uses: docker/login-action@v3
+        with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      - name: Charger les images construites dans le cluster
+        run: |
+          P="$(echo "$IMAGE_PREFIX" | tr '[:upper:]' '[:lower:]')"
+          for s in backend worker frontend; do
+            docker pull "$P-$s:${{ github.sha }}"
+            docker tag  "$P-$s:${{ github.sha }}" "helpdesk-$s:ci"
+            kind load docker-image "helpdesk-$s:ci" --name ci
+          done
+      - name: Déploiement (Kustomize, overlay ci)
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/deploy.sh ci
+      - name: Smoke test de bout en bout
+        run: |
+          kubectl -n helpdesk-ci port-forward svc/frontend 8081:80 &
+          sleep 5
+          CI_URL=http://127.0.0.1:8081 ./scripts/smoke-test.sh ci
+      - name: Logs en cas d'échec
+        if: failure()
+        run: |
+          kubectl -n helpdesk-ci get pods -o wide
+          kubectl -n helpdesk-ci describe pods | tail -80
+          kubectl -n helpdesk-ci logs deploy/backend --tail=80 || true
+          kubectl -n helpdesk-ci logs deploy/worker --tail=80 || true
+
+  # ---------------------------------------------------------------- 5. CD vers le cluster local (runner auto-hébergé, optionnel)
+  # Activer : Settings > Secrets and variables > Actions > Variables : DEPLOY_LOCAL=true, LOCAL_KUBECONFIG=<chemin absolu>
+  deploy-dev:
+    needs: deploy-ephemeral
+    if: ${{ vars.DEPLOY_LOCAL == 'true' }}
+    runs-on: self-hosted
+    environment: dev
+    env:
+      KUBECONFIG: ${{ vars.LOCAL_KUBECONFIG }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          chmod +x scripts/*.sh
+          ./scripts/build-push.sh "${GITHUB_SHA::7}"
+          ./scripts/deploy.sh dev "${GITHUB_SHA::7}"
+          ./scripts/smoke-test.sh dev
+
+  # Promotion en "prod" : l'environnement GitHub 'production' est configuré avec un relecteur obligatoire (approbation manuelle)
+  deploy-prod:
+    needs: deploy-dev
+    runs-on: self-hosted
+    environment: production
+    env:
+      KUBECONFIG: ${{ vars.LOCAL_KUBECONFIG }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          chmod +x scripts/*.sh
+          ./scripts/deploy.sh prod "${GITHUB_SHA::7}"
+          ./scripts/smoke-test.sh prod
