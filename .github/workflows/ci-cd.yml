@@ -13,7 +13,6 @@ env:
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/helpdesk
 
 jobs:
-  # ---------------------------------------------------------------- 1. LINT + TESTS
   lint-test:
     runs-on: ubuntu-latest
     steps:
@@ -37,7 +36,6 @@ jobs:
           pip install bandit
           bandit -r app/backend/app app/worker/worker.py -ll
 
-  # ---------------------------------------------------------------- 2. VALIDATION IaC + MANIFESTS
   validate-infra:
     runs-on: ubuntu-latest
     steps:
@@ -55,7 +53,6 @@ jobs:
             kubectl kustomize k8s/overlays/$o | docker run -i --rm ghcr.io/yannh/kubeconform:latest -strict -summary -ignore-missing-schemas -
           done
 
-  # ---------------------------------------------------------------- 3. BUILD + SCAN + PUSH (GHCR)
   build-push:
     needs: [lint-test, validate-infra]
     if: github.event_name == 'push'
@@ -95,7 +92,6 @@ jobs:
           docker tag  "$IMAGE:${{ github.sha }}" "$IMAGE:main"
           docker push "$IMAGE:main"
 
-  # ---------------------------------------------------------------- 4. DÉPLOIEMENT D'ESSAI (cluster kind éphémère dans le runner)
   deploy-ephemeral:
     needs: build-push
     runs-on: ubuntu-latest
@@ -131,8 +127,6 @@ jobs:
           kubectl -n helpdesk-ci logs deploy/backend --tail=80 || true
           kubectl -n helpdesk-ci logs deploy/worker --tail=80 || true
 
-  # ---------------------------------------------------------------- 5. CD vers le cluster local (runner auto-hébergé, optionnel)
-  # Activer : Settings > Secrets and variables > Actions > Variables : DEPLOY_LOCAL=true, LOCAL_KUBECONFIG=<chemin absolu>
   deploy-dev:
     needs: deploy-ephemeral
     if: ${{ vars.DEPLOY_LOCAL == 'true' }}
@@ -148,7 +142,6 @@ jobs:
           ./scripts/deploy.sh dev "${GITHUB_SHA::7}"
           ./scripts/smoke-test.sh dev
 
-  # Promotion en "prod" : l'environnement GitHub 'production' est configuré avec un relecteur obligatoire (approbation manuelle)
   deploy-prod:
     needs: deploy-dev
     runs-on: self-hosted
