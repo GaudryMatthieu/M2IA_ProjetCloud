@@ -20,13 +20,13 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.12", cache: pip}
       - name: Back-end — lint + tests
-        working-directory: cloud/helpdesk-cloud/helpdesk-cloud
+        working-directory: app/backend
         run: |
           pip install -r requirements-dev.txt
           ruff check .
           python -m pytest -q
       - name: Worker — lint + tests
-        working-directory: cloud/helpdesk-cloud/helpdesk-cloud
+        working-directory: app/worker
         run: |
           pip install -r requirements-dev.txt
           ruff check .
@@ -58,9 +58,6 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions: {contents: read, packages: write}
-    defaults:
-      run:
-       working-directory: cloud/helpdesk-cloud/helpdesk-cloud
     strategy:
       matrix:
         service: [backend, worker, frontend]
@@ -74,9 +71,10 @@ jobs:
       - name: Build (sans push)
         uses: docker/build-push-action@v6
         with:
-          context: cloud/helpdesk-cloud/helpdesk-cloud
+          context: app/${{ matrix.service }}
           load: true
           tags: ${{ env.IMAGE }}:${{ github.sha }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Scan Trivy (bloquant sur CRITICAL corrigeable)   # A.8.7 / A.8.25
